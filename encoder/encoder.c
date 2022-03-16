@@ -1650,7 +1650,7 @@ static void x264_slice_write( x264_t *h )
 				h->info.length = 0;
 				float alpha_loc = 1;//alpha_loc局部失真权重，alpha_com复杂性失真权重，相加为1；*****
 				float alpha_com = 0;
-				float mvc_c1 = 2.0, mvc_c2 = 0.7;//用于mvc调整的两个惩罚因子，对应第一类块组和第二类块组。
+				float mvc_c1 = 2, mvc_c2 = 0.7;//用于mvc调整的两个惩罚因子，对应第一类块组和第二类块组。
 				int d1 = 0, d2 = 0, d3 = 0, d4 = 0, d5 = 0, d6 = 0, d7 = 0, d8 = 0;//第一类块组时，d1=abs(h1-h2),d2=abs(v1-v2);第二类块组时用d1到d8分别计算各分量差值绝对值
 				int d_num_0_1 = 0;//统计d的是0或者1的数量
 				for (int m_xy = 0; m_xy < h->sh.i_last_mb; m_xy++)
