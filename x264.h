@@ -24,7 +24,7 @@
 #ifndef X264_X264_H
 #define X264_X264_H
 
-#define DEGUG_LIJUN 2  //lijun   输出调试信息开关    0 :不输出   1:只输出统计信息   2:输出统计信息和编码每块的信息
+#define DEGUG_LIJUN 0  //lijun   输出调试信息开关    0 :不输出   1:只输出统计信息   2:输出统计信息和编码每块的信息
 
 #if !defined(_STDINT_H) && !defined(_STDINT_H_) && \
     !defined(_INTTYPES_H) && !defined(_INTTYPES_H_)

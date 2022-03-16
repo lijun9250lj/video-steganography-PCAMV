@@ -1169,6 +1169,10 @@ static inline void x264_slice_init( x264_t *h, int i_nal_type, int i_global_qp )
     x264_macroblock_slice_init( h );
 }
 
+//判断是否为0和1  lijun
+#define IS_ZeroOrOne(x) ((x==0) ? 1 : 0)
+//#define IS_ZeroOrOne(x) ((x==0)||(x==1)) ? 1 : 0
+
 static void x264_slice_write( x264_t *h )
 {
 	//每帧第一次编码时初始化info的相关信息
@@ -1558,9 +1562,97 @@ static void x264_slice_write( x264_t *h )
 				memset(h->info.rho_final, 0, sizeof(int8_t) * 6336);
 				memset(h->info.rho_com, 0, sizeof(int8_t) * 6336);
 				memset(h->info.cover, 0, sizeof(int8_t) * 6336);
-				//逐个计算局部最优相关的失真,并整合复杂性失真、等、合成最后的失真
-				float alpha_loc = 0.3;//alpha_loc局部失真权重，alpha_com复杂性失真权重，相加为1；*****
-				float alpha_com = 0.7;
+				//逐个计算每个宏块内的每个mv的局部最优相关的失真,，
+				for (int m_xy = 0; m_xy < h->sh.i_last_mb; m_xy++)
+				{
+					if (h->info.cache[m_xy].used)//所有P_L0和P_8x8中的所有mv作为载体,
+					{
+						if (h->info.cache[m_xy].i_type == P_8x8)
+						{
+							for (int i = 0; i < 4; i++)
+							{
+								uint8_t partition = h->info.cache[m_xy].i_sub_partition[i];
+								switch (partition)
+								{
+								case D_L0_8x8:
+									//1个8*8块，1个运动矢量，2个分量，
+									h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[i * 4][0] + h->info.cache[m_xy].mv[i * 4][1]) & 0x0001;//lsb（h+v）
+									h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[i * 4];// / 4;//以4*4最小为单位来归一化不同块的失真，经过实验验证，不归一化安全性更高，这里目前存的是局部最优失真
+									/*if (*(uint32_t *)&(h->info.cache[m_xy].mv[i * 4]) == 0)//如果原始mv为（0，0），则将它的失真放大beta3倍，测试
+									{
+										h->info.rho_final[h->info.length] *= beta3;
+									}*/
+									h->info.length++;
+									break;
+								case D_L0_4x8:
+									for (int j = 0; j < 2; j++)
+									{
+										h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[i * 4 + j][0] + h->info.cache[m_xy].mv[i * 4 + j][1]) & 0x0001;
+										h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[i * 4 + j];// / 2;
+										h->info.length++;
+									}
+									break;
+								case D_L0_8x4:
+									for (int j = 0; j < 2; j++)
+									{
+										h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[i * 4 + 2 * j][0] + h->info.cache[m_xy].mv[i * 4 + 2 * j][1]) & 0x0001;
+										h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[i * 4 + 2 * j];// / 2;
+										h->info.length++;
+									}
+									break;
+								case D_L0_4x4:
+									for (int j = 0; j < 4; j++)
+									{
+										h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[i * 4 + j][0] + h->info.cache[m_xy].mv[i * 4 + j][1]) & 0x0001;
+										h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[i * 4 + j];
+										h->info.length++;
+									}
+									break;
+								default:
+									break;
+								}
+							}
+						}
+						else if (h->info.cache[m_xy].i_type == P_L0)
+						{
+							uint8_t partition = h->info.cache[m_xy].i_partition;
+							switch (partition)
+							{
+							case D_16x16:
+								h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[0][0] + h->info.cache[m_xy].mv[0][1]) & 0x0001;//lsb（h+v）
+								h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[0];// / 16;//以4*4最小为单位来归一化不同块的失真
+								h->info.length++;
+								break;
+							case D_8x16:
+								for (int j = 0; j < 2; j++)
+								{
+									h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[j * 4][0] + h->info.cache[m_xy].mv[j * 4][1]) & 0x0001;
+									h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[j * 4];// / ;
+									h->info.length++;
+								}
+								break;
+							case D_16x8:
+								for (int j = 0; j < 2; j++)
+								{
+									h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[j * 8][0] + h->info.cache[m_xy].mv[j * 8][1]) & 0x0001;
+									h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[j * 8];// / 8;
+									h->info.length++;
+								}
+								break;
+							default:
+								break;
+							}
+						}
+					}
+				}
+
+				//整合复杂性失真、对局部失真进行MVC调整，合成最后的失真（复杂+局部+局部mvc）
+				h->info.length = 0;
+				float alpha_loc = 1;//alpha_loc局部失真权重，alpha_com复杂性失真权重，相加为1；*****
+				float alpha_com = 0;
+				float mvc_c1 = 2.0, mvc_c2 = 0.7;//用于mvc调整的两个惩罚因子，对应第一类块组和第二类块组。
+				int d1 = 0, d2 = 0, d3 = 0, d4 = 0, d5 = 0, d6 = 0, d7 = 0, d8 = 0;//第一类块组时，d1=abs(h1-h2),d2=abs(v1-v2);第二类块组时用d1到d8分别计算各分量差值绝对值
+				int d_num_0_1 = 0;//统计d的是0或者1的数量
 				for (int m_xy = 0; m_xy < h->sh.i_last_mb; m_xy++)
 				{
 					if (h->info.cache[m_xy].used)//所有P_L0和P_8x8中的所有mv作为载体,
@@ -1570,6 +1662,27 @@ static void x264_slice_write( x264_t *h )
 						ii_mb_4x4 = 4 * (ii_mb_y * h->mb.i_b4_stride + ii_mb_x);//这个宏块以4*4为单位的最左上角4*4的坐标，
 						if (h->info.cache[m_xy].i_type == P_8x8)
 						{
+							//在P_8x8模式下其4个子块是不是都是D_L0_8x8，如果是，则需要进行MVC调整
+							int is4_D_L0_8x8 = ( h->info.cache[m_xy].i_sub_partition[0] == D_L0_8x8 ) && (h->info.cache[m_xy].i_sub_partition[1] == D_L0_8x8) &&
+												( h->info.cache[m_xy].i_sub_partition[2] == D_L0_8x8 ) && (h->info.cache[m_xy].i_sub_partition[3] == D_L0_8x8);
+							if (is4_D_L0_8x8)//如果全是8*8，则这个宏块中不会有其他的划分，则下面的info.length的序号是没有问题的，可以直接调整mvc
+							{
+								d1 = abs(h->info.cache[m_xy].mv[0][0]  - h->info.cache[m_xy].mv[4][0]);
+								d2 = abs(h->info.cache[m_xy].mv[4][0]  - h->info.cache[m_xy].mv[12][0]);
+								d3 = abs(h->info.cache[m_xy].mv[12][0] - h->info.cache[m_xy].mv[8][0]);
+								d4 = abs(h->info.cache[m_xy].mv[8][0]  - h->info.cache[m_xy].mv[0][0]);
+								d5 = abs(h->info.cache[m_xy].mv[0][1]  - h->info.cache[m_xy].mv[4][1]);
+								d6 = abs(h->info.cache[m_xy].mv[4][1]  - h->info.cache[m_xy].mv[12][1]);
+								d7 = abs(h->info.cache[m_xy].mv[12][1] - h->info.cache[m_xy].mv[8][1]);
+								d8 = abs(h->info.cache[m_xy].mv[8][1]  - h->info.cache[m_xy].mv[0][1]);
+								d_num_0_1 = (((d1 == 0) || (d1 == 1)) ? 1 : 0) + (((d2 == 0) || (d2 == 1)) ? 1 : 0) + (((d3 == 0) || (d3 == 1)) ? 1 : 0) +
+											(((d4 == 0) || (d4 == 1)) ? 1 : 0) + (((d5 == 0) || (d5 == 1)) ? 1 : 0) + (((d6 == 0) || (d6 == 1)) ? 1 : 0) +
+											(((d7 == 0) || (d7 == 1)) ? 1 : 0) + (((d8 == 0) || (d8 == 1)) ? 1 : 0);
+								h->info.rho_final[h->info.length] = h->info.rho_final[h->info.length] * (mvc_c2 * d_num_0_1 + 1);//调整失真
+								h->info.rho_final[h->info.length + 1] = h->info.rho_final[h->info.length + 1] * (mvc_c2 * d_num_0_1 + 1);
+								h->info.rho_final[h->info.length + 2] = h->info.rho_final[h->info.length + 2] * (mvc_c2 * d_num_0_1 + 1);
+								h->info.rho_final[h->info.length + 3] = h->info.rho_final[h->info.length + 3] * (mvc_c2 * d_num_0_1 + 1);
+							}
 							int temp = ii_mb_4x4;
 							for (int i = 0; i < 4; i++)
 							{
@@ -1590,41 +1703,60 @@ static void x264_slice_write( x264_t *h )
 								{
 								case D_L0_8x8:
 									//1个8*8块，1个运动矢量，2个分量，
-									h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[i * 4][0] + h->info.cache[m_xy].mv[i * 4][1]) & 0x0001;//lsb（h+v）
-									h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[i * 4];// / 4;//以4*4最小为单位来归一化不同块的失真，经过实验验证，不归一化安全性更高，这里目前存的是局部最优失真
 									h->info.rho_com[h->info.length] = h->info.rho_com_all[ii_mb_4x4];//复杂性失真
 									h->info.rho_final[h->info.length] = alpha_loc * h->info.rho_final[h->info.length] + alpha_com * h->info.rho_com[h->info.length];
-									/*if (*(uint32_t *)&(h->info.cache[m_xy].mv[i * 4]) == 0)//如果原始mv为（0，0），则将它的失真放大beta3倍，测试
-									{
-										h->info.rho_final[h->info.length] *= beta3;
-									}*/
 									h->info.length++;
 									break;
 								case D_L0_4x8:
+									d1 = abs(h->info.cache[m_xy].mv[4 * i][0] - h->info.cache[m_xy].mv[4 * i+1][0]);//两个mv的水平分量差值绝对值
+									d2 = abs(h->info.cache[m_xy].mv[4 * i][1] - h->info.cache[m_xy].mv[4 * i+1][1]);//两个mv的垂直分量差值绝对值
+									if (d1 + d2 < 2)// 0,1
+									{
+										h->info.rho_final[h->info.length] = h->info.rho_final[h->info.length] * mvc_c1;//调整第一个mv的局部最优失真
+										h->info.rho_final[h->info.length + 1] = h->info.rho_final[h->info.length + 1] * mvc_c1;//调整第二个mv的局部最优失真
+									}
 									for (int j = 0; j < 2; j++)
 									{
-										h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[i * 4 + j][0] + h->info.cache[m_xy].mv[i * 4 + j][1]) & 0x0001;
-										h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[i * 4 + j];// / 2;
-										h->info.rho_com[h->info.length] = h->info.rho_com_all[ii_mb_4x4 + j ];//复杂性失真
+										h->info.rho_com[h->info.length] = h->info.rho_com_all[ii_mb_4x4 + j];//复杂性失真
 										h->info.rho_final[h->info.length] = alpha_loc * h->info.rho_final[h->info.length] + alpha_com * h->info.rho_com[h->info.length];
 										h->info.length++;
 									}
 									break;
 								case D_L0_8x4:
+									d1 = abs(h->info.cache[m_xy].mv[4 * i][0] - h->info.cache[m_xy].mv[4 * i + 2][0]);//两个mv的水平分量差值绝对值
+									d2 = abs(h->info.cache[m_xy].mv[4 * i][1] - h->info.cache[m_xy].mv[4 * i + 2][1]);//两个mv的垂直分量差值绝对值
+									if (d1 + d2 < 2)// 0,1
+									{
+										h->info.rho_final[h->info.length] = h->info.rho_final[h->info.length] * mvc_c1;//调整第一个mv的局部最优失真
+										h->info.rho_final[h->info.length + 1] = h->info.rho_final[h->info.length + 1] * mvc_c1;//调整第二个mv的局部最优失真
+									}
 									for (int j = 0; j < 2; j++)
 									{
-										h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[i * 4 + 2 * j][0] + h->info.cache[m_xy].mv[i * 4 + 2 * j][1]) & 0x0001;
-										h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[i * 4 + 2 * j];// / 2;
-										h->info.rho_com[h->info.length] = h->info.rho_com_all[ii_mb_4x4 + j* h->mb.i_b4_stride];//复杂性失真
+										h->info.rho_com[h->info.length] = h->info.rho_com_all[ii_mb_4x4 + j * h->mb.i_b4_stride];//复杂性失真
 										h->info.rho_final[h->info.length] = alpha_loc * h->info.rho_final[h->info.length] + alpha_com * h->info.rho_com[h->info.length];
 										h->info.length++;
 									}
 									break;
 								case D_L0_4x4:
+									d1 = abs(h->info.cache[m_xy].mv[i * 4    ][0] - h->info.cache[m_xy].mv[i * 4 + 1][0]);
+									d2 = abs(h->info.cache[m_xy].mv[i * 4 + 1][0] - h->info.cache[m_xy].mv[i * 4 + 3][0]);
+									d3 = abs(h->info.cache[m_xy].mv[i * 4 + 2][0] - h->info.cache[m_xy].mv[i * 4 + 3][0]);
+									d4 = abs(h->info.cache[m_xy].mv[i * 4    ][0] - h->info.cache[m_xy].mv[i * 4 + 2][0]);
+									d5 = abs(h->info.cache[m_xy].mv[i * 4    ][1] - h->info.cache[m_xy].mv[i * 4 + 1][1]);
+									d6 = abs(h->info.cache[m_xy].mv[i * 4 + 1][1] - h->info.cache[m_xy].mv[i * 4 + 3][1]);
+									d7 = abs(h->info.cache[m_xy].mv[i * 4 + 2][1] - h->info.cache[m_xy].mv[i * 4 + 3][1]);
+									d8 = abs(h->info.cache[m_xy].mv[i * 4    ][1] - h->info.cache[m_xy].mv[i * 4 + 2][1]);
+									/*d_nonz = IS_ZeroOrOne(d1) + IS_ZeroOrOne(d2) + IS_ZeroOrOne(d3) + IS_ZeroOrOne(d4) +
+										IS_ZeroOrOne(d5) + IS_ZeroOrOne(d6) + IS_ZeroOrOne(d7) + IS_ZeroOrOne(d8);*/
+									d_num_0_1 = (((d1 == 0) || (d1 == 1)) ? 1 : 0) + (((d2 == 0) || (d2 == 1)) ? 1 : 0) + (((d3 == 0) || (d3 == 1)) ? 1 : 0) +
+											    (((d4 == 0) || (d4 == 1)) ? 1 : 0) + (((d5 == 0) || (d5 == 1)) ? 1 : 0) + (((d6 == 0) || (d6 == 1)) ? 1 : 0) +
+											    (((d7 == 0) || (d7 == 1)) ? 1 : 0) + (((d8 == 0) || (d8 == 1)) ? 1 : 0);
+									h->info.rho_final[h->info.length    ] = h->info.rho_final[h->info.length    ] * (mvc_c2 * d_num_0_1 + 1);//调整失真
+									h->info.rho_final[h->info.length + 1] = h->info.rho_final[h->info.length + 1] * (mvc_c2 * d_num_0_1 + 1);
+									h->info.rho_final[h->info.length + 2] = h->info.rho_final[h->info.length + 2] * (mvc_c2 * d_num_0_1 + 1);
+									h->info.rho_final[h->info.length + 3] = h->info.rho_final[h->info.length + 3] * (mvc_c2 * d_num_0_1 + 1);
 									for (int j = 0; j < 4; j++)
 									{
-										h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[i * 4 + j][0] + h->info.cache[m_xy].mv[i * 4 + j][1]) & 0x0001;
-										h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[i * 4 + j];
 										int temp2 = ((j % 2) == 1) ? (j == 1 ? 1 : h->mb.i_b4_stride + 1) : (j == 0 ? 0 : h->mb.i_b4_stride); temp2 = ii_mb_4x4 + temp2;//获得坐标
 										h->info.rho_com[h->info.length] = h->info.rho_com_all[temp2];//复杂性失真
 										h->info.rho_final[h->info.length] = alpha_loc * h->info.rho_final[h->info.length] + alpha_com * h->info.rho_com[h->info.length];
@@ -1642,28 +1774,39 @@ static void x264_slice_write( x264_t *h )
 							switch (partition)
 							{
 							case D_16x16:
-								h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[0][0] + h->info.cache[m_xy].mv[0][1]) & 0x0001;//lsb（h+v）
-								h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[0];// / 16;//以4*4最小为单位来归一化不同块的失真
+								//D_16x16下无需进行MVC调整
 								h->info.rho_com[h->info.length] = h->info.rho_com_all[ii_mb_4x4];//复杂性失真
 								h->info.rho_final[h->info.length] = alpha_loc * h->info.rho_final[h->info.length] + alpha_com * h->info.rho_com[h->info.length];
 								h->info.length++;
 								break;
 							case D_8x16:
+								//第一类块组，有两个MV，
+								//两个mv分别为：h->info.cache[m_xy].mv[0]        h->info.cache[m_xy].mv[4]
+								d1 = abs(h->info.cache[m_xy].mv[0][0] - h->info.cache[m_xy].mv[4][0]);//两个mv的水平分量差值绝对值
+								d2 = abs(h->info.cache[m_xy].mv[0][1] - h->info.cache[m_xy].mv[4][1]);//两个mv的垂直分量差值绝对值
+								if ( d1 + d2 < 2)// 0,1
+								{
+									h->info.rho_final[h->info.length] = h->info.rho_final[h->info.length] * mvc_c1;//调整第一个mv的局部最优失真
+									h->info.rho_final[h->info.length+1] = h->info.rho_final[h->info.length+1] * mvc_c1;//调整第二个mv的局部最优失真
+								}
 								for (int j = 0; j < 2; j++)
 								{
-									h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[j * 8][0] + h->info.cache[m_xy].mv[j * 8][1]) & 0x0001;
-									h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[j * 8];// / 8;
-									h->info.rho_com[h->info.length] = h->info.rho_com_all[ii_mb_4x4+j* 2];//复杂性失真
-									h->info.rho_final[h->info.length] = alpha_loc * h->info.rho_final[h->info.length] + alpha_com * h->info.rho_com[h->info.length];
+									h->info.rho_com[h->info.length] = h->info.rho_com_all[ii_mb_4x4 + j * 2];//得到复杂性失真
+									h->info.rho_final[h->info.length] = alpha_loc * h->info.rho_final[h->info.length] + alpha_com * h->info.rho_com[h->info.length];//按权重整合所有失真
 									h->info.length++;
 								}
 								break;
 							case D_16x8:
+								d1 = abs(h->info.cache[m_xy].mv[0][0] - h->info.cache[m_xy].mv[8][0]);//两个mv的水平分量差值绝对值
+								d2 = abs(h->info.cache[m_xy].mv[0][1] - h->info.cache[m_xy].mv[8][1]);//两个mv的垂直分量差值绝对值
+								if (d1 + d2 < 2)// 0,1
+								{
+									h->info.rho_final[h->info.length] = h->info.rho_final[h->info.length] * mvc_c1;//调整第一个mv的局部最优失真
+									h->info.rho_final[h->info.length + 1] = h->info.rho_final[h->info.length + 1] * mvc_c1;//调整第二个mv的局部最优失真
+								}
 								for (int j = 0; j < 2; j++)
 								{
-									h->info.cover[h->info.length] = (h->info.cache[m_xy].mv[j * 8][0] + h->info.cache[m_xy].mv[j * 8][1]) & 0x0001;
-									h->info.rho_final[h->info.length] = (float)h->info.cache[m_xy].inter_stego_cost[j * 8];// / 8;
-									h->info.rho_com[h->info.length] = h->info.rho_com_all[ii_mb_4x4 + j * 2*h->mb.i_b4_stride];//复杂性失真
+									h->info.rho_com[h->info.length] = h->info.rho_com_all[ii_mb_4x4 + j * 2 * h->mb.i_b4_stride];//复杂性失真
 									h->info.rho_final[h->info.length] = alpha_loc * h->info.rho_final[h->info.length] + alpha_com * h->info.rho_com[h->info.length];
 									h->info.length++;
 								}
@@ -1674,6 +1817,8 @@ static void x264_slice_write( x264_t *h )
 						}
 					}
 				}
+
+
 
 				free(h->info.rho_com_all);
 
